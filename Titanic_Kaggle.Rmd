@@ -1,0 +1,358 @@
+---
+title: "Using a Neural Network to Predict Titanic Survival"
+author: "Jarred Priester"
+date: "12/28/2021"
+output: pdf_document
+---
+1. Overview
+  + 1.1 description of dataset
+  + 1.2 goal of project
+  + 1.3 steps to achieve goal
+2. Data Cleaning
+  + 2.1 downloading the data
+  + 2.2 feature engineering
+  + 2.3 cleaning missing values
+3. Exploratory Data Analysis
+  + 3.1 exploring the data
+  + 3.2 visualization
+4. Neural Network
+  + 4.1 Neural Network setup
+  + 4.2 Neural Network
+  + 4.3 Results
+5. Conclusion
+
+# 1. Overview
+
+# 1.1 description of dataset
+
+This is my first attempt at a Kaggle competition. The competition I decided to give a try was the "Titanic - Machine Learning from Disaster". This competition will we be using a data set on the passengers of the Titanic. The following is from Kaggle's competition webpage:
+
+***The Challenge***
+
+*The sinking of the Titanic is one of the most infamous shipwrecks in history.*
+
+*On April 15, 1912, during her maiden voyage, the widely considered “unsinkable” RMS Titanic sank after colliding with an iceberg. Unfortunately, there weren’t enough lifeboats for everyone onboard, resulting in the death of 1502 out of 2224 passengers and crew.*
+
+*While there was some element of luck involved in surviving, it seems some groups of people were more likely to survive than others.*
+
+*In this challenge, we ask you to build a predictive model that answers the question: “what sorts of people were more likely to survive?” using passenger data (ie name, age, gender, socio-economic class, etc).*
+
+We are given two data sets. One being titled train and the other being titled test. The train data set consist of the following variables:
+  
+* PassendgerId
+* Survived
+* Pclass
+* Name
+* Sex
+* Age
+* SibSp
+* Parch
+* Ticket
+* Fare
+* Cabin
+* Embarked
+  
+The test data set consist of all the same variables except for the Survived variables. That missing information is what we will be trying to predict in this project.
+
+# 1.2 goal of the project
+
+The first goal of this project is to simply get started with Kaggle by entering into a competition and successfully submitting predictions. Second, I am wanting to share this code in order to help others like myself write their own projects in R and get started with Kaggle. Third, I am wanting to practice using a neural network to make some predictions. Fourth, after looking at other scores on the leaderboard a score of 80% accuracy look like a good score so we will use that as our benchmark for this project.
+
+# 1.3 steps to achieve the goal
+
+We will be applying a neural network using the nnet method from the caret library. First we will download the data given to us from Kaggle. Then we will clean up the data set by replacing missing information as well as creating a few new variables. Then we will analyze the data through visualization to help determine which variables are important. Then we will apply the neural network to get our predictions.
+
+# 2. Data Cleaning
+
+# 2.1 downloading the data
+```{r,results='hide',message=FALSE}
+#loading libraries
+if(!require(tidyverse)) install.packages("tidyverse")
+if(!require(caret)) install.packages("caret")
+if(!require(ggplot2)) install.packages("ggplot2")
+if(!require(dplyr)) install.packages("dplyr")
+if(!require(rpart)) install.packages("rpart")
+if(!require(mice)) install.packages("mice")
+if(!require(Rcpp)) install.packages("Rcpp")
+if(!require(ggthemes)) install.packages("ggthemes")
+
+library(tidyverse)
+library(caret)
+library(ggplot2)
+library(dplyr)
+library(rpart)
+library(mice)
+library(Rcpp)
+library(ggthemes)
+
+#Loading the data
+train <- read.csv("train.csv",stringsAsFactors = F)
+test <- read.csv("test.csv",stringsAsFactors = F)
+```
+
+Now we will combine both data sets and call this "all". We will use this for data exploration and feature engineering, then we will split ""all"" back into train and test for the model.
+```{r}
+all <- bind_rows(train,test)
+```
+
+
+Now let's take a look at the data set 
+```{r}
+head(all)
+str(all)
+summary(all)
+```
+
+Having looked at the feature classes, we are going to factor a few of them.
+```{r}
+all <- all %>% mutate(Survived = factor(Survived),
+               Pclass = factor(Pclass),
+               Sex = factor(Sex),
+               Embarked = factor(Embarked))
+```
+
+# 2.2 feature engineering
+
+There is not much we can do with the names but we can extract the titles and group them
+```{r}
+all$Title <- gsub('(.*, )|(\\..*)', '', all$Name)
+
+#showing a tibble of the titles and the count for each of #them
+all %>% group_by(Title)%>%
+  summarize(count = n())
+
+#changing a few titles to miss
+all$Title[all$Title == 'Ms'] <- 'Miss'
+all$Title[all$Title == 'Mlle'] <- 'Miss'
+
+#changing Mme to Mrs
+all$Title[all$Title == 'Mme'] <- 'Mrs'
+
+#most of these titles only show up once or a few times in #order to avoid over fitting we will group them into a #group called Other
+other <- c('Capt','Col','Don','Dona','Jonkheer','Lady','Major',
+           'Rev','Sir','the Countess')
+
+all$Title[all$Title %in% other]  <- 'Other'
+
+#factoring the Titles
+all$Title <- factor(all$Title)
+```
+
+Next we are going to create a feature called the family size
+```{r}
+all$Family_size <- all$SibSp + all$Parch + 1
+
+#factoring Family size
+all$Family_size <- factor(all$Family_size)
+```
+
+# 2.3 Cleaning missing values
+
+From looking at the data we can see that two observations are blank for embarked. Let's look at the average fare cost per embarked and make an estimation.
+```{r}
+which(all$Embarked == "")
+view(all[c(62,830),])
+
+#we know that both of these observations have the same pclass and fare, lets
+#look at a boxplot to visualize this
+all %>% ggplot(aes(Pclass,Fare)) +
+  geom_boxplot(aes(color = Embarked))
+
+#Both of these observations look like they should be Embarked from C
+#changing the missing observations to C
+all$Embarked[c(62,830)] <- "C"
+
+#factoring the Embarked feature, we should only have 3 levels now
+all$Embarked <- factor(all$Embarked)
+```
+
+Finding the remaining blank observations.
+```{r}
+colSums(all == "")
+```
+
+Cabin has too many that are black so we will leave that column alone.
+
+Looking at the number of NA for each column
+```{r}
+colSums(is.na(all))
+```
+
+Fare has one NA in the test set. We will change that to the average fare.
+```{r}
+which(is.na(test$Fare))
+
+#taking a look at the row that has the NA
+test[153,]
+
+#changing the NA to the avg Fare
+all <- all %>%
+  mutate(Fare = ifelse(is.na(Fare),median(Fare, na.rm = TRUE),Fare))
+
+#checking that the NA was changed
+sum(is.na(all$Fare))
+```
+
+263 NA in total for Age. Using the mice function to fill in those NAs with predictions
+```{r,warning=FALSE}
+temp <- all %>% select(Pclass,Sex,Age)
+
+set.seed(1)
+mice_input <- mice(temp, method = 'rf')
+mice_output <- complete(mice_input)
+
+#using histograms to make sure the new predictions match the distribution of all
+hist(all$Age)
+hist(mice_output$Age)
+
+#replacing age variable with new age predictions
+all$Age <- mice_output$Age
+
+#checking to see if there are any NA in train$Age
+sum(is.na(all$Age))
+```
+
+We now have 0 NAs in the data set expect for the 418 Survived values we are trying to predict.
+```{r}
+colSums(is.na(all))
+```
+
+# 3. Exploratory Data Analysis
+
+# 3.1 exploring the data
+
+What percentage of the data set are male
+```{r}
+mean(all$Sex == "male")
+```
+
+What percentage of the data set are female
+```{r}
+mean(all$Sex == "female")
+```
+
+What percentage of the data set survived
+```{r}
+mean(train$Survived == 1)
+```
+
+What percentage of the data set died
+```{r}
+mean(train$Survived == 0)
+```
+
+# 3.2 visualization
+
+Graph showing the amount survived and not survived split by Sex
+```{r}
+train %>% ggplot(aes(factor(Survived))) +
+  facet_grid(.~Sex) +
+    geom_bar(aes(fill=factor(Survived))) +
+  ggtitle("Amount that Survived and Did Not Survived by Sex") +
+  scale_fill_discrete(name = "Survivial Status",
+                      labels = c("Did Not Survive", "Survived")) +
+  theme_economist()
+```
+
+histogram of age distribution in the data
+```{r}
+all %>% ggplot(aes(Age)) +
+  geom_histogram(fill = "blue") +
+  ggtitle("Age distribution") +
+  theme_economist()
+```
+
+Boxplot with Survival status and ticket price
+```{r}
+train %>% ggplot(aes(factor(Survived),Fare)) +
+  geom_boxplot(color = "blue") +
+  ggtitle("Survival and ticket price (Survived = 1)") +
+theme_economist()
+```
+
+Scatter plot with Age and Fare with Survival Status
+```{r}
+all %>% ggplot(aes(Age,Fare)) +
+  geom_point(color = "blue") +
+  ggtitle("Scatter Plot with Age and Fare") +
+  xlab("Age") +
+  ylab("Fare") +
+  theme_economist()
+```
+
+Bar graph with Pclass and Survival Status
+```{r}
+train %>% ggplot(aes(factor(Survived))) +
+  facet_grid(.~Pclass) +
+  geom_bar(aes(fill=factor(Survived))) +
+  ggtitle("Amount Survived and Not Survived, Split by Pclass") +
+  scale_fill_discrete(name = "survival status", 
+                      labels = c("Did Not Survive","Survived")) +
+  theme_economist()
+```
+
+# 4. Neural Network
+
+# 4.1 Neural Network setup
+
+splitting the all dataset back into train and test
+```{r}
+train <- all[1:891,]
+test <- all[892:1309,]
+```
+
+Will be using k-fold cross validation on all the algorithms
+creating the k-fold parameters, k is 10
+```{r}
+set.seed(1, sample.kind = "Rounding")
+control <- trainControl(method = "cv", number = 10, p = .9)
+```
+
+setting the parameters for the neural network
+```{r}
+tuning <- data.frame(size = seq(100), decay = seq(.01,1,.1))
+```
+
+creating the x and y for the model. X is the data that will be used as input. Y is what we will be trying to predict as the output.
+```{r}
+train_x <- train %>% select(Pclass, Sex, Age, SibSp, Parch, Fare, Embarked,Title,Family_size)
+
+train_y <- train$Survived
+```
+
+# 4.2 Neural Network
+```{r,warning=FALSE,results='hide',message=FALSE}
+#Predicting survival by using a neural network
+set.seed(1, sample.kind = "Rounding")
+train_nn <- train(train_x, train_y,
+                  method = "nnet",
+                  tuneGrid = tuning,
+                  trControl = control)
+```
+
+best tune
+```{r}
+train_nn$bestTune
+```
+
+# 4.3 Results
+```{r}
+#plotting results
+plot(train_nn)
+```
+
+creating the predictions
+```{r}
+nn_preds <- predict(train_nn, test)
+
+solution <- data.frame(PassengerID = test$PassengerId,
+                       Survived = nn_preds)
+
+write.csv(solution, file = 'nn.titanic.preds.cvs', row.names = FALSE)
+```
+
+These predictions were submitted to the Kaggle Titanic competition and received a score of 78% accuracy. This was just below our target goal of 80%.
+
+# 5. Conclusion
+
+To recap, we downloaded the data from Kaggle, cleaned and analyzed the data, and successfully created predictions by using a neural network. As mentioned, this did not meet our goal of 80% but if we wanted to improve this score we could add more algorithms and combine them to make an ensemble. A neural network may not be the most effective algorithm for this problem and by combining different algorithms we may achieve the goal of 80%. All in all, I believed this was good start in practicing using neural networks and I hope that you were able to learn something from this notebook. This is my first Kaggle notebook so please feel free to leave feedback, I am always wanting to learn and improve.
